@@ -25,6 +25,7 @@ backend/service_account.json
 # Ignore temporary face images
 backend/temp_images/
 backend/chain.json
+backend/voting.db
 
 backend/venv/
 # Ignore Python cache
