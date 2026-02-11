@@ -38,7 +38,7 @@ GSPREAD_SCOPE = [
 ]
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 SHEET_NAME = 'Mock Aadhar DB'  # Make sure this name exactly matches your Google Sheet
-SHEET_ID = '1M4aN5RHDRBkNIipoNsoNvlRBOdlkam936lbx2FETf5Y'
+SHEET_ID = ''
 # --- Temporary storage for OTPs ---
 # In a real app, this would be a database (like Redis)
 otp_storage = {}
