@@ -1,23 +1,17 @@
 # Filename: backend/app.py
-# Final Version with Google Sheets & Mock OTP Integration
+# Registration with Voter ID + DOB + Mobile + Mock OTP + Face
 
 import os
 import uuid
-import json
 import base64
 import random  # For generating the mock OTP
+from datetime import datetime, date
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from deepface import DeepFace
 from blockchain import Blockchain
 from liveness import check_liveness
-
-
-# --- Imports for Google Sheets ---
-import gspread
-from google.oauth2.service_account import Credentials
-# --------------------------------------
 
 # 1. App Configuration
 app = Flask(__name__)
@@ -31,23 +25,13 @@ db = SQLAlchemy(app)
 if not os.path.exists('temp_images'):
     os.makedirs('temp_images')
 
-# --- Google Sheets Configuration ---
-GSPREAD_SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file"
-]
-SERVICE_ACCOUNT_FILE = 'service_account.json'
-SHEET_NAME = 'Mock Aadhar DB'  # Make sure this name exactly matches your Google Sheet
-SHEET_ID = ''
-# --- Temporary storage for OTPs ---
-# In a real app, this would be a database (like Redis)
+# Temporary storage for OTPs (demo-only; use Redis/DB in production)
 otp_storage = {}
-# ----------------------------------------
 
 # 2. Database Models
 class Voter(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # The 'voter_id' is now the verified Aadhaar Number
+    # Reusing this existing column to store 10-char voter ID
     aadhaar_number = db.Column(db.String(12), unique=True, nullable=False)
     name = db.Column(db.String(100), nullable=False)
     image_path = db.Column(db.String(200), nullable=False)
@@ -57,100 +41,93 @@ class Vote(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     candidate_id = db.Column(db.String(100), nullable=False)
 """
-# 3. Helper Function to Access Google Sheet
-def get_sheet():
-    """Authenticates with Google and returns the first worksheet."""
+def calculate_age(dob_str):
     try:
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=GSPREAD_SCOPE)
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(SHEET_ID).sheet1
-        return sheet
-    except Exception as e:
-        print(f"Error accessing Google Sheet: {e}")
+        dob = datetime.strptime(dob_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
         return None
+
+    today = date.today()
+    years = today.year - dob.year
+    if (today.month, today.day) < (dob.month, dob.day):
+        years -= 1
+    return years
 
 # 4. API Routes
 @app.route('/')
 def index():
-    return "E-Voting Backend with Google Sheets is running!"
+    return "E-Voting Backend is running!"
 
-# --- NEW: /send-otp Route (replaces /verify-aadhaar) ---
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
     data = request.json
-    aadhaar_number = data.get('aadhaarNumber')
+    voter_id = (data.get('voterId') or '').strip().upper()
+    dob = data.get('dob')
+    mobile_number = (data.get('mobileNumber') or '').strip()
 
-    if not aadhaar_number or len(aadhaar_number) != 12 or not aadhaar_number.isdigit():
-        return jsonify({"error": "Please enter a valid 12-digit Aadhaar number."}), 400
+    if len(voter_id) != 10:
+        return jsonify({"error": "Voter ID must be exactly 10 characters."}), 400
 
-    # Check if this Aadhaar is already registered in our *own* voting database
-    if Voter.query.filter_by(aadhaar_number=aadhaar_number).first():
-        return jsonify({"error": "This Aadhaar number is already registered to vote."}), 409
+    if not mobile_number.isdigit() or len(mobile_number) != 10:
+        return jsonify({"error": "Mobile number must be exactly 10 digits."}), 400
 
-    # --- Find User in Google Sheet ---
-    sheet = get_sheet()
-    if sheet is None:
-        return jsonify({"error": "Could not connect to the verification service."}), 500
-
-    try:
-        # Find the cell that matches the Aadhaar number (searches column 1)
-        cell = sheet.find(aadhaar_number, in_column=1)
-        # Get all data from that row
-        row_data = sheet.row_values(cell.row)
-        
-        # Map data to a dictionary based on our headers (AadhaarNumber, Name, MobileNumber, Age)
-        user_data = {
-            'aadhaar': row_data[0],
-            'name': row_data[1],
-            'phone': row_data[2],
-            'age': int(row_data[3])
-        }
-
-    except gspread.exceptions.CellNotFound:
-        return jsonify({"error": "Aadhaar number not found in the registry."}), 404
-    except Exception as e:
-        print(f"Error reading sheet data: {e}")
-        return jsonify({"error": "An error occurred while fetching user data."}), 500
-
-    # --- Perform Age Check ---
-    if user_data['age'] < 18:
+    age = calculate_age(dob)
+    if age is None:
+        return jsonify({"error": "Please select a valid date of birth."}), 400
+    if age < 18:
         return jsonify({"error": "Voter must be 18 years or older to register."}), 403
 
-    # --- MOCK OTP LOGIC ---
     otp = str(random.randint(100000, 999999))
-    
-    # Store the OTP with the user's data
-    otp_storage[aadhaar_number] = {
+
+    if Voter.query.filter_by(aadhaar_number=voter_id).first():
+        return jsonify({"error": "This voter ID is already registered."}), 409
+
+    otp_storage[voter_id] = {
         "otp": otp,
-        "name": user_data['name']
+        "name": f"Voter-{voter_id[-4:]}",
+        "dob": dob,
+        "mobile_number": mobile_number
     }
-    
-    # This is the "Mock" part: Print to terminal instead of sending SMS
+
     print("---------------------------------------------------------")
-    print(f"==> MOCK OTP for {user_data['name']} ({aadhaar_number}): {otp}")
+    print(f"==> MOCK OTP for Voter ID {voter_id} ({mobile_number}): {otp}")
     print("---------------------------------------------------------")
-    
+
     return jsonify({
         "message": "OTP has been generated.",
-        "name": user_data['name'] # Send the name back to the UI
+        "name": f"Voter-{voter_id[-4:]}"
     }), 200
 
-# --- MODIFIED: /register Route ---
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
-    aadhaar_number = data.get('aadhaarNumber')
-    otp = data.get('otp')
+    voter_id = (data.get('voterId') or '').strip().upper()
+    otp = (data.get('otp') or '').strip()
+    dob = data.get('dob')
+    mobile_number = (data.get('mobileNumber') or '').strip()
     image_data_uri = data.get('imageData')
 
-    # --- Verify the Mock OTP ---
-    if aadhaar_number not in otp_storage or otp_storage[aadhaar_number]['otp'] != otp:
+    if len(voter_id) != 10:
+        return jsonify({"error": "Voter ID must be exactly 10 characters."}), 400
+    if not mobile_number.isdigit() or len(mobile_number) != 10:
+        return jsonify({"error": "Mobile number must be exactly 10 digits."}), 400
+
+    age = calculate_age(dob)
+    if age is None:
+        return jsonify({"error": "Please select a valid date of birth."}), 400
+    if age < 18:
+        return jsonify({"error": "Voter must be 18 years or older to register."}), 403
+
+    if voter_id not in otp_storage or otp_storage[voter_id]['otp'] != otp:
         return jsonify({"error": "Invalid or expired OTP."}), 401
-    
-    # OTP is valid, get the name we stored
-    name = otp_storage[aadhaar_number]['name']
-    
-    # --- Process and Save Face Image ---
+
+    otp_record = otp_storage[voter_id]
+    if otp_record['dob'] != dob or otp_record['mobile_number'] != mobile_number:
+        return jsonify({"error": "DOB or mobile number does not match OTP session."}), 400
+
+    name = otp_record['name']
+
+    temp_filename = None
     try:
         header, encoded = image_data_uri.split(",", 1)
         binary_data = base64.b64decode(encoded)
@@ -161,21 +138,19 @@ def register():
         DeepFace.detectFace(img_path=temp_filename)
 
     except Exception as e:
-        if os.path.exists(temp_filename):
+        if temp_filename and os.path.exists(temp_filename):
             os.remove(temp_filename)
         return jsonify({"error": "No face detected or image is invalid."}), 400
 
-    # --- Create the voter record ---
     new_voter = Voter(
-        aadhaar_number=aadhaar_number,
+        aadhaar_number=voter_id,
         name=name,
         image_path=temp_filename
     )
     db.session.add(new_voter)
     db.session.commit()
-    
-    # Clean up the used OTP
-    del otp_storage[aadhaar_number]
+
+    del otp_storage[voter_id]
 
     return jsonify({"message": f"Voter '{name}' registered successfully!"}), 201
 
@@ -222,18 +197,15 @@ def login():
     return jsonify({"error": "Face not recognized"}), 401
 
 
-# --- /vote Route (Updated to use aadhaar_number) ---
 @app.route('/vote', methods=['POST'])
 def vote():
     data = request.json
-    voter_id = data.get('voterId') # This is the Aadhaar Number
+    voter_id = data.get('voterId')
     candidate_id = data.get('candidateId')
 
     if not voter_id or not candidate_id:
         return jsonify({"error": "Voter ID and Candidate ID are required."}), 400
 
-    # --- IDENTITY CHECK (using SQL) ---
-    # Find the voter in our SQL database
     voter = Voter.query.filter_by(aadhaar_number=voter_id).first()
 
     if not voter:
@@ -242,22 +214,15 @@ def vote():
     if voter.has_voted:
         return jsonify({"error": "This voter has already cast their vote."}), 403
 
-    # --- CAST THE VOTE (using Blockchain) ---
-
-    # 1. First, mark the voter as 'has_voted' in the SQL DB to prevent double login
     voter.has_voted = True
     db.session.add(voter)
     db.session.commit()
 
-    # 2. Now, add the vote to the blockchain's "pending" list
     block_index = blockchain.add_vote(
         voter_aadhaar=voter.aadhaar_number,
         candidate_id=candidate_id
     )
 
-    # --- MINE THE BLOCK (For a project, we can do this instantly) ---
-    # In a real system, mining is separate. Here, we'll auto-mine
-    # to instantly seal the vote into the chain.
     last_block = blockchain.last_block
     last_hash = blockchain.hash(last_block)
     blockchain.create_block(proof=123, previous_hash=last_hash) # Using a dummy proof
