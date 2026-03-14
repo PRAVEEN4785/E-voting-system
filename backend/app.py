@@ -4,7 +4,8 @@
 import os
 import uuid
 import base64
-import random  # For generating the mock OTP
+import random
+import re
 from datetime import datetime, date
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
@@ -12,9 +13,25 @@ from flask_cors import CORS
 from deepface import DeepFace
 from blockchain import Blockchain
 from liveness import check_liveness
+from dotenv import load_dotenv, find_dotenv
+
+# Ensure info logs are visible in the terminal
+import logging
+
+# try to load a .env file from the project root (or current working directory)
+# the default load_dotenv() call will look for a file named ".env" next to
+# the script being executed; ensure you place your file there rather than in
+# the virtualenv folder.
+load_dotenv(find_dotenv())
 
 # 1. App Configuration
 app = Flask(__name__)
+# Ensure info-level logs show up in the terminal (Flask default may hide INFO)
+logging.basicConfig(level=logging.INFO)
+app.logger.setLevel(logging.INFO)
+
+# debug: very briefly log whether the Twilio SID was loaded (true/false)
+app.logger.info("Twilio SID present? %s", bool(os.getenv('TWILIO_ACCOUNT_SID')))
 CORS(app)
 blockchain = Blockchain()
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///voting.db'
@@ -31,16 +48,21 @@ otp_storage = {}
 # 2. Database Models
 class Voter(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # Reusing this existing column to store 10-char voter ID
-    aadhaar_number = db.Column(db.String(12), unique=True, nullable=False)
+    # Voter ID column
+    voter_id = db.Column(db.String(12), unique=True, nullable=False)
     name = db.Column(db.String(100), nullable=False)
     image_path = db.Column(db.String(200), nullable=False)
     has_voted = db.Column(db.Boolean, default=False)
+    mobile_number = db.Column(db.String(10), unique=True, nullable=False)
 """
 class Vote(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     candidate_id = db.Column(db.String(100), nullable=False)
 """
+
+# Create database tables
+with app.app_context():
+    db.create_all()
 def calculate_age(dob_str):
     try:
         dob = datetime.strptime(dob_str, "%Y-%m-%d").date()
@@ -65,8 +87,9 @@ def send_otp():
     dob = data.get('dob')
     mobile_number = (data.get('mobileNumber') or '').strip()
 
-    if len(voter_id) != 10:
-        return jsonify({"error": "Voter ID must be exactly 10 characters."}), 400
+    # Validate voter ID format: first 3 alphabets, next 7 numbers
+    if not re.match(r'^[A-Z]{3}\d{7}$', voter_id):
+        return jsonify({"error": "Voter ID must be in format ABC1234567 (3 letters followed by 7 digits)."}), 400
 
     if not mobile_number.isdigit() or len(mobile_number) != 10:
         return jsonify({"error": "Mobile number must be exactly 10 digits."}), 400
@@ -77,10 +100,15 @@ def send_otp():
     if age < 18:
         return jsonify({"error": "Voter must be 18 years or older to register."}), 403
 
-    otp = str(random.randint(100000, 999999))
-
-    if Voter.query.filter_by(aadhaar_number=voter_id).first():
+    # Check if voter ID is already registered
+    if Voter.query.filter_by(voter_id=voter_id).first():
         return jsonify({"error": "This voter ID is already registered."}), 409
+
+    # Check if mobile number is already registered
+    if Voter.query.filter_by(mobile_number=mobile_number).first():
+        return jsonify({"error": "This mobile number is already registered."}), 409
+
+    otp = str(random.randint(100000, 999999))
 
     otp_storage[voter_id] = {
         "otp": otp,
@@ -89,12 +117,12 @@ def send_otp():
         "mobile_number": mobile_number
     }
 
-    print("---------------------------------------------------------")
-    print(f"==> MOCK OTP for Voter ID {voter_id} ({mobile_number}): {otp}")
-    print("---------------------------------------------------------")
+    # For development: print OTP to terminal so the tester can copy/paste it.
+    print(f"[OTP] Voter {voter_id} -> {otp}", flush=True)
+    app.logger.info("Generated OTP for %s (OTP=%s)", voter_id, otp)
 
     return jsonify({
-        "message": "OTP has been generated.",
+        "message": "OTP generated. Check the backend terminal for the code.",
         "name": f"Voter-{voter_id[-4:]}"
     }), 200
 
@@ -107,8 +135,9 @@ def register():
     mobile_number = (data.get('mobileNumber') or '').strip()
     image_data_uri = data.get('imageData')
 
-    if len(voter_id) != 10:
-        return jsonify({"error": "Voter ID must be exactly 10 characters."}), 400
+    # Validate voter ID format: first 3 alphabets, next 7 numbers
+    if not re.match(r'^[A-Z]{3}\d{7}$', voter_id):
+        return jsonify({"error": "Voter ID must be in format ABC1234567 (3 letters followed by 7 digits)."}), 400
     if not mobile_number.isdigit() or len(mobile_number) != 10:
         return jsonify({"error": "Mobile number must be exactly 10 digits."}), 400
 
@@ -125,7 +154,11 @@ def register():
     if otp_record['dob'] != dob or otp_record['mobile_number'] != mobile_number:
         return jsonify({"error": "DOB or mobile number does not match OTP session."}), 400
 
+    if Voter.query.filter_by(voter_id=voter_id).first():
+        return jsonify({"error": "This voter ID is already registered."}), 409
+
     name = otp_record['name']
+
 
     temp_filename = None
     try:
@@ -135,17 +168,22 @@ def register():
         with open(temp_filename, 'wb') as f:
             f.write(binary_data)
         
-        DeepFace.detectFace(img_path=temp_filename)
+        # use new API: extract_faces returns list of faces found
+        faces = DeepFace.extract_faces(img_path=temp_filename, detector_backend='mtcnn')
+        if not faces or len(faces) == 0:
+            raise ValueError("no face returned by extract_faces")
 
     except Exception as e:
+        app.logger.exception("error processing registration image")
         if temp_filename and os.path.exists(temp_filename):
             os.remove(temp_filename)
         return jsonify({"error": "No face detected or image is invalid."}), 400
 
     new_voter = Voter(
-        aadhaar_number=voter_id,
+        voter_id=voter_id,
         name=name,
-        image_path=temp_filename
+        image_path=temp_filename,
+        mobile_number=mobile_number
     )
     db.session.add(new_voter)
     db.session.commit()
@@ -165,7 +203,7 @@ def login():
 
     # 🔐 LIVENESS CHECK
     if not check_liveness(image_list):
-        return jsonify({"error": "Liveness detection failed. Please blink and turn head."}), 403
+        return jsonify({"error": "Liveness detection failed. Please turn your head left and right."}), 403
 
     # ✅ Continue face verification
     for voter in Voter.query.all():
@@ -189,7 +227,7 @@ def login():
                     return jsonify({
                         "message": f"Welcome {voter.name}",
                         "voterName": voter.name,
-                        "voterId": voter.aadhaar_number
+                        "voterId": voter.voter_id
                     }), 200
             except:
                 continue
@@ -206,7 +244,7 @@ def vote():
     if not voter_id or not candidate_id:
         return jsonify({"error": "Voter ID and Candidate ID are required."}), 400
 
-    voter = Voter.query.filter_by(aadhaar_number=voter_id).first()
+    voter = Voter.query.filter_by(voter_id=voter_id).first()
 
     if not voter:
         return jsonify({"error": "Voter not found."}), 404
@@ -219,7 +257,7 @@ def vote():
     db.session.commit()
 
     block_index = blockchain.add_vote(
-        voter_aadhaar=voter.aadhaar_number,
+        voter_id=voter.voter_id,
         candidate_id=candidate_id
     )
 
@@ -227,7 +265,7 @@ def vote():
     last_hash = blockchain.hash(last_block)
     blockchain.create_block(proof=123, previous_hash=last_hash) # Using a dummy proof
 
-    return jsonify({"message": f"Your vote has been securely recorded in block {block_index}."}), 200
+    return jsonify({"message": "Successfully voted"}), 200
 # --- NEW ADMIN/RESULTS ROUTES ---
 
 @app.route('/admin/results', methods=['GET'])

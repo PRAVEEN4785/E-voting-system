@@ -59,13 +59,13 @@ class Blockchain:
         
         return block
 
-    def add_vote(self, voter_aadhaar, candidate_id):
+    def add_vote(self, voter_id, candidate_id):
         """
         Adds a new vote to the list of pending_votes.
         This will be included in the next "mined" block.
         """
         self.pending_votes.append({
-            'voter': voter_aadhaar,
+            'voter': voter_id,
             'candidate': candidate_id,
         })
         # Return the index of the block this vote will be added to

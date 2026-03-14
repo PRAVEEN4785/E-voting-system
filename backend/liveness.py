@@ -25,11 +25,12 @@ def eye_aspect_ratio(eye):
 
 
 def check_liveness(image_list):
-    blink = False
     left = False
     right = False
 
-    EAR_THRESHOLD = 0.23
+    # Track nose x min/max across frames instead of relying on absolute per-frame
+    nose_min = 1.0
+    nose_max = 0.0
 
     base_options = python.BaseOptions(
         model_asset_path="models/face_landmarker.task"
@@ -46,6 +47,21 @@ def check_liveness(image_list):
 
     for img_data in image_list:
         image = decode_image(img_data)
+
+        # Resize large images to speed up Mediapipe processing while
+        # preserving aspect ratio. Webcam from frontend is 480x360;
+        # downscale to max width 320 for faster landmark detection.
+        try:
+            h0, w0, _ = image.shape
+            target_w = 320
+            if w0 > target_w:
+                scale = target_w / float(w0)
+                new_h = int(h0 * scale)
+                image = cv2.resize(image, (target_w, new_h))
+        except Exception:
+            # if anything goes wrong with resizing, continue with original
+            pass
+
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         mp_image = mp.Image(
@@ -68,22 +84,37 @@ def check_liveness(image_list):
         right_eye = np.array([p(i) for i in RIGHT_EYE])
 
         ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2
-        if ear < EAR_THRESHOLD:
-            blink = True
 
         nose_x = landmarks[1].x
-        if nose_x < 0.48:
+        # update min/max observed nose x positions
+        if nose_x < nose_min:
+            nose_min = nose_x
+        if nose_x > nose_max:
+            nose_max = nose_x
+
+        # tolerant thresholds for left/right head turns
+        if nose_min < 0.45:
             left = True
-        elif nose_x > 0.52:
+        if nose_max > 0.55:
             right = True
 
-        if blink and left and right:
+        # allow a single-direction head turn to count by measuring overall
+        # nose movement across frames. This helps when user turns mostly one way.
+        nose_delta = nose_max - nose_min
+        movement_sufficient = nose_delta > 0.16  # tunable
+
+        # debug logging to help tune thresholds (visible in server logs)
+        print(
+            f"nose_x={nose_x:.3f}, nose_min={nose_min:.3f}, "
+            f"nose_max={nose_max:.3f}, nose_delta={nose_delta:.3f}, "
+            f"left={left}, right={right}, movement_ok={movement_sufficient}"
+        )
+
+        # require either a left+right sequence OR sufficient overall movement
+        head_movement_ok = (left and right) or movement_sufficient
+        if head_movement_ok:
             detector.close()
             return True
-        print(
-    f"EAR={ear:.3f}, nose_x={nose_x:.3f}, "
-    f"blink={blink}, left={left}, right={right}"
-)
 
 
     detector.close()

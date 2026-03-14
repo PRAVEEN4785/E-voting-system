@@ -1,7 +1,7 @@
 // Filename: frontend/src/App.js
 // Registration with Voter ID + DOB + Mobile + Mock OTP + Face
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import './App.css';
 
@@ -19,25 +19,30 @@ function App() {
   const [showOtpInput, setShowOtpInput] = useState(false);
 
   const [message, setMessage] = useState({ text: '', type: '' });
+  const [topNotice, setTopNotice] = useState({ text: '', type: '' });
   const webcamRef = useRef(null);
   const capture = useCallback(() => webcamRef.current.getScreenshot(), [webcamRef]);
 
   const captureFrames = async () => {
     const frames = [];
 
-    for (let i = 0; i < 12; i++) {
+    // Optimized for faster login: 6 frames with 150ms gap -> ~0.9s total
+    for (let i = 0; i < 6; i++) {
       const image = webcamRef.current?.getScreenshot();
       if (image) frames.push(image);
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
 
     return frames;
   };
 
   const showMessage = (text, type) => setMessage({ text, type });
+  const showTopNotice = (text, type) => setTopNotice({ text, type });
+
 
   const changeView = (newView) => {
     setMessage({ text: '', type: '' });
+    setTopNotice({ text: '', type: '' });
     setVoterId('');
     setDob('');
     setMobileNumber('');
@@ -63,8 +68,8 @@ function App() {
 
   const validateRegistrationDetails = () => {
     const normalizedVoterId = voterId.trim().toUpperCase();
-    if (normalizedVoterId.length !== 10) {
-      showMessage('Voter ID must be exactly 10 characters.', 'error');
+    if (!/^[A-Z]{3}\d{7}$/.test(normalizedVoterId)) {
+      showMessage('Voter ID must be in format ABC1234567 (3 letters followed by 7 digits).', 'error');
       return false;
     }
 
@@ -110,7 +115,7 @@ function App() {
         setVoterId(voterId.trim().toUpperCase());
         setMobileNumber(mobileNumber.trim());
         setShowOtpInput(true);
-        showMessage(`OTP generated for ${result.name}. Check your Flask terminal for the code.`, 'success');
+        showMessage(`OTP generated for ${result.name}. Check the backend terminal for the code.`, 'success');
       } else {
         showMessage(`Error: ${result.error}`, 'error');
       }
@@ -164,11 +169,13 @@ function App() {
   };
 
   const handleLogin = async () => {
-    showMessage('Please blink your eyes and turn your head left and right', 'info');
+    // show a top (non-modal) instruction for liveness
+    showTopNotice('Please turn your head left and right', 'info');
 
     const images = await captureFrames();
 
     if (!images || images.length < 5) {
+      setTopNotice({ text: '', type: '' });
       showMessage('Failed to capture enough frames', 'error');
       return;
     }
@@ -183,6 +190,7 @@ function App() {
       const result = await response.json();
 
       if (response.status === 200) {
+        setTopNotice({ text: '', type: '' });
         showMessage(result.message, 'success');
         setLoggedInVoter({
           voterName: result.voterName,
@@ -190,9 +198,11 @@ function App() {
         });
         setView('voting');
       } else {
+        setTopNotice({ text: '', type: '' });
         showMessage(`Error: ${result.error}`, 'error');
       }
     } catch (err) {
+      setTopNotice({ text: '', type: '' });
       showMessage('Server connection failed', 'error');
     }
   };
@@ -214,7 +224,6 @@ function App() {
         setTimeout(() => {
           setView('login');
           setLoggedInVoter(null);
-          showMessage('You have successfully voted.', 'success');
         }, 3000);
       } else {
         showMessage(`Error: ${result.error}`, 'error');
@@ -232,15 +241,15 @@ function App() {
       <div className="process-steps">
         <div className="step-card">
           <h3>Step 1: Register</h3>
-          <p>Go to the Register page, enter your 10-character voter ID, date of birth, and mobile number. OTP will be generated in the backend terminal.</p>
+          <p>Go to the Register page, enter your 10-character voter ID, date of birth, and mobile number. Verify your mobile with the OTP shown in the backend terminal.</p>
         </div>
         <div className="step-card">
           <h3>Step 2: Verify</h3>
-          <p>Enter the OTP from the terminal and capture your face to complete your secure registration.</p>
+          <p>Enter the OTP shown in backend terminal and capture your face to complete your secure registration.</p>
         </div>
         <div className="step-card">
           <h3>Step 3: Vote</h3>
-          <p>Login using only your face. Once authenticated, cast your vote. You can only vote once.</p>
+          <p>Login using your face. Once authenticated, cast your vote.</p>
         </div>
       </div>
       <div className="home-cta">
@@ -265,41 +274,36 @@ function App() {
         <form onSubmit={handleVerifyAndRegister} className="form-container">
           <h3>Register Your Details</h3>
 
-          <fieldset disabled={showOtpInput}>
-            <input
-              type="text"
-              value={voterId}
-              onChange={(e) => setVoterId(e.target.value.toUpperCase())}
-              placeholder="Enter 10-character voter ID"
-              minLength={10}
-              maxLength={10}
-              required
-            />
-            <input
-              type="date"
-              value={dob}
-              onChange={(e) => setDob(e.target.value)}
-              required
-            />
-            <input
-              type="tel"
-              value={mobileNumber}
-              onChange={(e) => setMobileNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="Enter 10-digit mobile number"
-              pattern="\d{10}"
-              minLength={10}
-              maxLength={10}
-              required
-            />
-          </fieldset>
+          <input
+            type="text"
+            value={voterId}
+            onChange={(e) => setVoterId(e.target.value.toUpperCase())}
+            placeholder="Enter 10-character voter ID"
+            minLength={10}
+            maxLength={10}
+            required
+          />
+          <input
+            type="date"
+            value={dob}
+            onChange={(e) => setDob(e.target.value)}
+            required
+          />
+          <input
+            type="tel"
+            value={mobileNumber}
+            onChange={(e) => setMobileNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
+            placeholder="Enter 10-digit mobile number"
+            pattern="\d{10}"
+            minLength={10}
+            maxLength={10}
+            required
+          />
 
           {!showOtpInput ? (
             <button type="button" className="button-primary" onClick={handleSendOtp}>Send OTP</button>
           ) : (
             <>
-              <hr />
-              <h4>Welcome, {userName}!</h4>
-              <p>Please enter the 6-digit code from the Flask terminal and capture your face.</p>
               <input
                 type="text"
                 value={otp}
@@ -323,7 +327,7 @@ function App() {
       <p>Please use your face to log in and cast your vote.</p>
       <div className="webcam-container" style={{ alignItems: 'center' }}>
         <h3>Login with Your Face</h3>
-        <p className="instruction">Please blink once and move your head left and right</p>
+        <p className="instruction">Please turn your head left and right</p>
 
         <Webcam audio={false} ref={webcamRef} screenshotFormat="image/jpeg" width={480} height={360} />
         <button className="button-primary login-button" onClick={handleLogin}>Authenticate</button>
@@ -334,7 +338,7 @@ function App() {
   const renderVoteBallotView = () => (
     <div className="page-container voting-container">
       <h2>Welcome, {loggedInVoter.voterName}!</h2>
-      <p>Please cast your vote for the position of Class Representative.</p>
+      <p>Please cast your vote.</p>
       <div className="candidates">
         <div className="candidate-card" onClick={() => handleVote('Candidate A')}>
           <h3>Candidate A</h3>
@@ -355,7 +359,7 @@ function App() {
   const renderCandidatesView = () => (
     <div className="page-container">
       <h2>Meet the Candidates</h2>
-      <p>Here are the official (fictional) candidates for the project election.</p>
+      <p>Here are the official candidates for the election.</p>
       <div className="candidates" style={{ marginTop: '20px' }}>
         <div className="candidate-card static">
           <h3>Candidate A</h3>
@@ -382,9 +386,9 @@ function App() {
       <p>Have questions or need assistance with the voting process?</p>
       <p>Please reach out to the election committee.</p>
       <div className="contact-info">
-        <p><strong>Email:</strong> support@svuce-voting.edu</p>
-        <p><strong>Phone:</strong> +91-0877-22XXXXX</p>
-        <p><strong>Office:</strong> Room 102, Admin Building, SVU College of Engineering, Tirupati</p>
+        <p><strong>Email:</strong>2022csm.r328@svce.edu.in</p>
+        <p><strong>Phone:</strong> +91-817979478*</p>
+        <p><strong>Office:</strong> Room 102, Admin Building, SV College of Engineering, Tirupati</p>
       </div>
     </div>
   );
@@ -405,9 +409,21 @@ function App() {
       </nav>
 
       <main className="main-content">
+        {topNotice.text && (
+          <div className={`top-notice ${topNotice.type}`} role="status" aria-live="polite">
+            {topNotice.text}
+          </div>
+        )}
         {message.text && (
-          <div className={`message ${message.type}`}>
-            {message.text}
+          <div className={`modal-overlay ${message.type}`} role="dialog" aria-live="assertive">
+            <div className="modal-box">
+              <h3>{message.type === 'error' ? 'Error' : message.type === 'success' ? 'Success' : 'Notice'}</h3>
+              <p>{message.text}</p>
+              <div className="modal-actions">
+               
+                <button className="modal-close primary" onClick={() => setMessage({ text: '', type: '' })}>OK</button>
+              </div>
+            </div>
           </div>
         )}
         {view === 'home' && renderHomeView()}
@@ -419,7 +435,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>&copy; 2025 SVU College of Engineering, Tirupati, Andhra Pradesh. Final Year Project.</p>
+        <p>&copy; Sri Venkateswara College of Engineering, Tirupati, Andhra Pradesh. Final Year Project.</p>
       </footer>
     </div>
   );

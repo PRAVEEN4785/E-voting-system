@@ -5,3 +5,6 @@ gunicorn
 deepface==0.0.79
 opencv-python
 numpy
+mediapipe
+twilio
+python-dotenv
