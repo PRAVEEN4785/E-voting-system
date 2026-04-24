@@ -122,8 +122,9 @@ def send_otp():
     app.logger.info("Generated OTP for %s (OTP=%s)", voter_id, otp)
 
     return jsonify({
-        "message": "OTP generated. Check the backend terminal for the code.",
-        "name": f"Voter-{voter_id[-4:]}"
+        "message": "OTP generated successfully!",
+        "name": f"Voter-{voter_id[-4:]}",
+        "otp": otp  # Include OTP in response for demo purposes
     }), 200
 
 @app.route('/register', methods=['POST'])

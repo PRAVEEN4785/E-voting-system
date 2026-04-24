@@ -8,20 +8,48 @@ import './App.css';
 const apiUrl = 'http://127.0.0.1:5000';
 
 function App() {
-  const [view, setView] = useState('home');
+  const [view, setView] = useState(() => localStorage.getItem('currentView') || 'home');
   const [loggedInVoter, setLoggedInVoter] = useState(null);
+  const [results, setResults] = useState({});
 
   const [voterId, setVoterId] = useState('');
   const [dob, setDob] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
   const [userName, setUserName] = useState('');
   const [otp, setOtp] = useState('');
+  const [demoOtp, setDemoOtp] = useState('');
   const [showOtpInput, setShowOtpInput] = useState(false);
 
   const [message, setMessage] = useState({ text: '', type: '' });
   const [topNotice, setTopNotice] = useState({ text: '', type: '' });
   const webcamRef = useRef(null);
   const capture = useCallback(() => webcamRef.current.getScreenshot(), [webcamRef]);
+
+  // Save current view to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('currentView', view);
+  }, [view]);
+
+  // Fetch results when view is results
+  useEffect(() => {
+    if (view === 'results') {
+      fetchResults();
+    }
+  }, [view]);
+
+  const fetchResults = async () => {
+    try {
+      const response = await fetch(`${apiUrl}/admin/results`);
+      if (response.ok) {
+        const data = await response.json();
+        setResults(data.results);
+      } else {
+        showMessage('Failed to fetch results.', 'error');
+      }
+    } catch (err) {
+      showMessage('Error fetching results.', 'error');
+    }
+  };
 
   const captureFrames = async () => {
     const frames = [];
@@ -39,8 +67,8 @@ function App() {
   const showMessage = (text, type) => setMessage({ text, type });
   const showTopNotice = (text, type) => setTopNotice({ text, type });
 
-
-  const changeView = (newView) => {
+  // Clear registration form data only (used on page refresh while staying on register page)
+  const clearRegistrationForm = () => {
     setMessage({ text: '', type: '' });
     setTopNotice({ text: '', type: '' });
     setVoterId('');
@@ -48,7 +76,13 @@ function App() {
     setMobileNumber('');
     setUserName('');
     setOtp('');
+    setDemoOtp('');
     setShowOtpInput(false);
+  };
+
+  // Change view and clear all form data (used for navigation between different pages)
+  const changeView = (newView) => {
+    clearRegistrationForm();
     setView(newView);
   };
 
@@ -114,8 +148,9 @@ function App() {
         setUserName(result.name);
         setVoterId(voterId.trim().toUpperCase());
         setMobileNumber(mobileNumber.trim());
+        setDemoOtp(result.otp);  // Added this line
         setShowOtpInput(true);
-        showMessage(`OTP generated for ${result.name}. Check the backend terminal for the code.`, 'success');
+        showMessage(`OTP generated for ${result.name}!`, 'success');
       } else {
         showMessage(`Error: ${result.error}`, 'error');
       }
@@ -222,7 +257,7 @@ function App() {
       if (response.status === 200) {
         showMessage(result.message, 'success');
         setTimeout(() => {
-          setView('login');
+          setView('home');
           setLoggedInVoter(null);
         }, 3000);
       } else {
@@ -241,11 +276,11 @@ function App() {
       <div className="process-steps">
         <div className="step-card">
           <h3>Step 1: Register</h3>
-          <p>Go to the Register page, enter your 10-character voter ID, date of birth, and mobile number. Verify your mobile with the OTP shown in the backend terminal.</p>
+          <p>Go to the Register page, enter your 10-character voter ID, date of birth, and mobile number. Verify your mobile with the Demo OTP shown on the screen.</p>
         </div>
         <div className="step-card">
           <h3>Step 2: Verify</h3>
-          <p>Enter the OTP shown in backend terminal and capture your face to complete your secure registration.</p>
+          <p>Enter the OTP shown on the screen and capture your face to complete your secure registration.</p>
         </div>
         <div className="step-card">
           <h3>Step 3: Vote</h3>
@@ -282,12 +317,14 @@ function App() {
             minLength={10}
             maxLength={10}
             required
+            disabled={showOtpInput}
           />
           <input
             type="date"
             value={dob}
             onChange={(e) => setDob(e.target.value)}
             required
+            disabled={showOtpInput}
           />
           <input
             type="tel"
@@ -298,6 +335,7 @@ function App() {
             minLength={10}
             maxLength={10}
             required
+            disabled={showOtpInput}
           />
 
           {!showOtpInput ? (
@@ -380,6 +418,25 @@ function App() {
     </div>
   );
 
+  const renderResultsView = () => (
+    <div className="page-container">
+      <h2>Election Results</h2>
+      <p>Total votes casted for each candidate:</p>
+      <div className="results-container">
+        {Object.keys(results).length > 0 ? (
+          Object.entries(results).map(([candidate, votes]) => (
+            <div key={candidate} className="result-card">
+              <h3>{candidate}</h3>
+              <p className="vote-count">{votes} votes</p>
+            </div>
+          ))
+        ) : (
+          <p>Loading results...</p>
+        )}
+      </div>
+    </div>
+  );
+
   const renderContactView = () => (
     <div className="page-container contact-page">
       <h2>Contact Us</h2>
@@ -404,6 +461,7 @@ function App() {
           <button className={`nav-button ${view === 'register' ? 'active' : ''}`} onClick={() => changeView('register')}>Register</button>
           <button className={`nav-button ${view === 'login' ? 'active' : ''}`} onClick={() => changeView('login')}>Login</button>
           <button className={`nav-button ${view === 'candidates' ? 'active' : ''}`} onClick={() => changeView('candidates')}>Candidates</button>
+          <button className={`nav-button ${view === 'results' ? 'active' : ''}`} onClick={() => changeView('results')}>Results</button>
           <button className={`nav-button ${view === 'contact' ? 'active' : ''}`} onClick={() => changeView('contact')}>Contact Us</button>
         </div>
       </nav>
@@ -426,11 +484,18 @@ function App() {
             </div>
           </div>
         )}
+        {showOtpInput && demoOtp && (
+          <div className="demo-otp-container">
+            <div className="demo-otp-label">Demo OTP:</div>
+            <div className="demo-otp-value">{demoOtp}</div>
+          </div>
+        )}
         {view === 'home' && renderHomeView()}
         {view === 'register' && renderRegisterView()}
         {view === 'login' && renderLoginView()}
         {view === 'voting' && renderVoteBallotView()}
         {view === 'candidates' && renderCandidatesView()}
+        {view === 'results' && renderResultsView()}
         {view === 'contact' && renderContactView()}
       </main>
 
